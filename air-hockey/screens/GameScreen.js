@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useRef, useEffect, useCallback } from 'react'
 import { StyleSheet, Dimensions, View } from 'react-native'
+import { useSharedValue, runOnJS, useFrameCallback } from 'react-native-reanimated'
 
 import { GameRenderer } from '../components/GameRenderer'
 import { GameUI } from '../components/GameUI'
-import { initPhysics, addBodies, stepPhysics, syncEntityPosition, clearWorld, destroyEngine } from '../systems/Physics'
+import { initPhysics, addBodies, stepPhysics, syncEntityPosition, destroyEngine } from '../systems/Physics'
 import { createAISystem } from '../systems/AISystem'
 import { createPuck, resetPuck } from '../entities/Puck'
 import { createMallet, setMalletPosition, constrainMallet } from '../entities/Mallet'
@@ -16,68 +17,68 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window')
 
 const activeTouches = new Map()
 
-export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScoreUpdate }) => {
+export const GameScreen = ({
+  gameMode,
+  difficulty,
+  currentStage,
+  gameStateRef,
+  gameConfigRef,
+  onReset,
+  onScoreUpdate,
+}) => {
   const physicsRef = useRef(null)
   const entitiesRef = useRef({})
   const aiSystemRef = useRef(null)
   const timeRef = useRef(0)
-  const gameLoopRef = useRef(null)
   const lastFrameTimeRef = useRef(0)
-  const gameModeRef = useRef(gameMode ?? GAME_MODES.SINGLE_PLAYER)
-  const gameStateRef = useRef('playing')
+  const lastPhysicsUpdateTimeRef = useRef(0)
   const layoutRef = useRef({ x: 0, y: 0, width: SCREEN_WIDTH, height: SCREEN_HEIGHT })
+  const tickRef = useRef(0)
+  const PHYSICS_UPDATE_INTERVAL = 16.67 // Cap physics at 60fps
+
+  const scoreRef = useRef({ player: 0, ai: 0 })
+  const countdownRef = useRef(3)
+  const countdownIntervalRef = useRef(null)
+  const gameStateShared = useSharedValue('playing')
+
+  const gameModeRef = useRef(gameMode ?? GAME_MODES.SINGLE_PLAYER)
+
+  const [, forceUpdate] = React.useState(0)
 
   useEffect(() => {
     gameModeRef.current = gameMode
   }, [gameMode])
 
-  useEffect(() => {
-    gameStateRef.current = gameState
-  }, [gameState])
+  const updateMalletForTouch = useCallback(
+    (x, y, isPlayer2) => {
+      if (gameStateRef.current !== 'playing') return
 
-  const [score, setScore] = useState({ player: 0, ai: 0 })
-  const [gameState, setGameState] = useState('playing')
-  const [countdown, setCountdown] = useState(3)
-  const [entities, setEntities] = useState({})
+      const currentGameMode = gameModeRef.current
 
-  useEffect(() => {
-    if (onScoreUpdate && (score.player > 0 || score.ai > 0)) {
-      onScoreUpdate(score)
-    }
-  }, [score, onScoreUpdate])
-
-  const updateMalletForTouch = useCallback((x, y, isPlayer2) => {
-    if (gameStateRef.current !== 'playing') return
-
-    const currentGameMode = gameModeRef.current
-
-    if (currentGameMode === GAME_MODES.SINGLE_PLAYER || currentGameMode === GAME_MODES.STAGE_MODE) {
-      const mallet1 = entitiesRef.current.mallet1
-      if (mallet1) {
-        setMalletPosition(mallet1, x, y)
-      }
-    } else if (currentGameMode === GAME_MODES.LOCAL_MULTIPLAYER) {
-      if (isPlayer2) {
-        const mallet2 = entitiesRef.current.mallet2
-        if (mallet2) {
-          setMalletPosition(mallet2, x, y)
-        }
-      } else {
+      if (currentGameMode === GAME_MODES.SINGLE_PLAYER || currentGameMode === GAME_MODES.STAGE_MODE) {
         const mallet1 = entitiesRef.current.mallet1
         if (mallet1) {
           setMalletPosition(mallet1, x, y)
         }
+      } else if (currentGameMode === GAME_MODES.LOCAL_MULTIPLAYER) {
+        if (isPlayer2) {
+          const mallet2 = entitiesRef.current.mallet2
+          if (mallet2) {
+            setMalletPosition(mallet2, x, y)
+          }
+        } else {
+          const mallet1 = entitiesRef.current.mallet1
+          if (mallet1) {
+            setMalletPosition(mallet1, x, y)
+          }
+        }
       }
-    }
-  }, [])
+    },
+    [gameStateRef],
+  )
 
   const handleTouchStart = useCallback(
-    (event) => {
-      const { locationX, locationY, touchIndex } = event.nativeEvent
-
-      const x = locationX - layoutRef.current.x
-      const y = locationY - layoutRef.current.y
-
+    (x, y, touchIndex) => {
       const isBottomHalf = y > SCREEN_HEIGHT / 2
 
       let isPlayer2 = false
@@ -102,12 +103,7 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
   )
 
   const handleTouchMove = useCallback(
-    (event) => {
-      const { locationX, locationY, touchIndex } = event.nativeEvent
-
-      const x = locationX - layoutRef.current.x
-      const y = locationY - layoutRef.current.y
-
+    (x, y, touchIndex) => {
       const touchData = activeTouches.get(touchIndex)
       if (touchData) {
         touchData.lastX = x
@@ -120,8 +116,7 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
     [updateMalletForTouch],
   )
 
-  const handleTouchEnd = useCallback((event) => {
-    const { touchIndex } = event.nativeEvent
+  const handleTouchEnd = useCallback((touchIndex) => {
     activeTouches.delete(touchIndex)
   }, [])
 
@@ -129,53 +124,64 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
     layoutRef.current = event.nativeEvent.layout
   }, [])
 
-  const handleGoal = useCallback((goalType) => {
-    const puck = entitiesRef.current.puck
-    if (puck) {
-      resetPuck(puck)
-    }
-
-    if (goalType === 'player') {
-      setScore((prev) => {
-        return { ...prev, player: prev.player + 1 }
-      })
-    } else {
-      setScore((prev) => {
-        return { ...prev, ai: prev.ai + 1 }
-      })
-    }
-
-    setGameState('countdown')
-    setCountdown(3)
-
-    let count = 3
-    const interval = setInterval(() => {
-      count -= 1
-      setCountdown(count)
-      if (count <= 0) {
-        clearInterval(interval)
-        setGameState('playing')
-      }
-    }, 1000)
-  }, [])
-
-  const gameLoop = useCallback(
-    (timestamp) => {
-      if (gameState !== 'playing') {
-        gameLoopRef.current = requestAnimationFrame(gameLoop)
-        return
+  const triggerGoal = useCallback(
+    (goalType) => {
+      const puck = entitiesRef.current.puck
+      if (puck) {
+        resetPuck(puck)
       }
 
-      const deltaTime = lastFrameTimeRef.current ? timestamp - lastFrameTimeRef.current : 16.67
-      lastFrameTimeRef.current = timestamp
+      if (goalType === 'player') {
+        scoreRef.current = { ...scoreRef.current, player: scoreRef.current.player + 1 }
+      } else {
+        scoreRef.current = { ...scoreRef.current, ai: scoreRef.current.ai + 1 }
+      }
 
-      const clampedDelta = Math.min(deltaTime, 16.66)
+      gameConfigRef.current.score = scoreRef.current
 
-      timeRef.current += clampedDelta
+      if (onScoreUpdate) {
+        onScoreUpdate(scoreRef.current)
+      }
+
+      gameStateRef.current = 'countdown'
+      countdownRef.current = 3
+      forceUpdate((t) => t + 1)
+
+      // Clear any existing countdown interval
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current)
+      }
+
+      let count = 3
+      countdownIntervalRef.current = setInterval(() => {
+        count -= 1
+        countdownRef.current = count
+        forceUpdate((t) => t + 1)
+        if (count <= 0) {
+          clearInterval(countdownIntervalRef.current)
+          countdownIntervalRef.current = null
+          gameStateRef.current = 'playing'
+          forceUpdate((t) => t + 1)
+        }
+      }, 1000)
+    },
+    [gameStateRef, gameConfigRef, onScoreUpdate],
+  )
+
+  const physicsStep = useCallback(
+    (deltaTime) => {
+      // Use fixed timestep for reliable physics regardless of frame callback timing
+      const stepDelta = 16.67 // Fixed 60fps timestep
+
+      if (gameStateRef.current !== 'playing') return
+
+      timeRef.current += stepDelta
 
       const puck = entitiesRef.current.puck
       const mallet2 = entitiesRef.current.mallet2
-      stepPhysics(clampedDelta, puck?.body, mallet2?.body)
+      // console.log('[DEBUG] Before stepPhysics, puck:', puck?.position, 'mallet2:', mallet2?.position)
+      stepPhysics(stepDelta, puck?.body, mallet2?.body)
+      // console.log('[DEBUG] After stepPhysics, puck:', puck?.body?.position)
 
       if (puck) {
         const puckX = puck.body.position.x
@@ -187,9 +193,11 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
         const inGoalXRange = puckX > goalLeft && puckX < goalRight
 
         if (puckY < -PUCK_RADIUS * 2 && inGoalXRange) {
-          handleGoal('ai')
+          triggerGoal('ai')
+          return
         } else if (puckY > GAME_HEIGHT + PUCK_RADIUS * 2 && inGoalXRange) {
-          handleGoal('player')
+          triggerGoal('player')
+          return
         } else {
           const goals = Object.values(entitiesRef.current).filter((e) => e.type === 'goal')
           for (const goal of goals) {
@@ -198,19 +206,30 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
             const distance = Math.sqrt(dx * dx + dy * dy)
 
             if (distance < PUCK_RADIUS + 30) {
-              handleGoal(goal.goalType)
-              break
+              triggerGoal(goal.goalType)
+              return
             }
           }
         }
       }
+
+      // Sync entity positions in place to avoid creating new objects every frame
+      Object.values(entitiesRef.current).forEach((entity) => {
+        if (entity.body) {
+          syncEntityPosition(entity)
+        }
+      })
+
+      // console.log('[DEBUG] After sync, puck:', entitiesRef.current.puck?.position)
 
       const currentGameMode = gameModeRef.current
       if (
         aiSystemRef.current &&
         (currentGameMode === GAME_MODES.SINGLE_PLAYER || currentGameMode === GAME_MODES.STAGE_MODE)
       ) {
+        // console.log('[DEBUG] Before AI update, mallet2:', entitiesRef.current.mallet2?.position)
         entitiesRef.current = aiSystemRef.current.update(entitiesRef.current, timeRef.current)
+        // console.log('[DEBUG] After AI update, mallet2:', entitiesRef.current.mallet2?.position)
       }
 
       if (currentGameMode === GAME_MODES.STAGE_MODE) {
@@ -222,27 +241,35 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
         })
       }
 
-      const updatedEntities = {}
-      Object.entries(entitiesRef.current).forEach(([key, entity]) => {
-        if (entity.body) {
-          updatedEntities[key] = syncEntityPosition(entity)
-        } else {
-          updatedEntities[key] = entity
-        }
-      })
-
-      entitiesRef.current = updatedEntities
-      setEntities({ ...updatedEntities })
-
       const constrainedMallet1 = entitiesRef.current.mallet1
       const constrainedMallet2 = entitiesRef.current.mallet2
       if (constrainedMallet1) constrainMallet(constrainedMallet1)
       if (constrainedMallet2) constrainMallet(constrainedMallet2)
-
-      gameLoopRef.current = requestAnimationFrame(gameLoop)
     },
-    [gameState, handleGoal],
+    [gameStateRef, triggerGoal],
   )
+
+  const gameLoopCallback = useCallback(
+    (timestamp) => {
+      const deltaTime = lastFrameTimeRef.current ? timestamp - lastFrameTimeRef.current : 16.67
+      lastFrameTimeRef.current = timestamp
+
+      // Only run physics at 60fps cap to prevent excessive updates on 120Hz screens
+      const timeSinceLastPhysics = timestamp - lastPhysicsUpdateTimeRef.current
+      if (timeSinceLastPhysics >= PHYSICS_UPDATE_INTERVAL) {
+        lastPhysicsUpdateTimeRef.current = timestamp - (timeSinceLastPhysics % PHYSICS_UPDATE_INTERVAL)
+        physicsStep(PHYSICS_UPDATE_INTERVAL)
+      }
+    },
+    [physicsStep],
+  )
+
+  useFrameCallback((frameInfo) => {
+    'worklet'
+    const delta = frameInfo.timeSincePreviousFrame ?? 16
+    runOnJS(gameLoopCallback)(delta)
+    tickRef.current += 1
+  })
 
   const initializeGame = useCallback(() => {
     activeTouches.clear()
@@ -260,16 +287,22 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
       obstacles = []
 
     if (gameMode === GAME_MODES.SINGLE_PLAYER) {
-      mallet1 = createMallet(world, 'player1', true)
-      mallet2 = createMallet(world, 'ai', false)
+      mallet1 = createMallet(world, 'player1', false)
+      mallet2 = createMallet(world, 'ai', true)
       aiSystem = createAISystem(difficulty)
       aiSystemRef.current = aiSystem
+      console.log(
+        '[DEBUG] SINGLE_PLAYER: mallet1 (player) at y=',
+        mallet1.position.y,
+        ', mallet2 (AI) at y=',
+        mallet2.position.y,
+      )
     } else if (gameMode === GAME_MODES.LOCAL_MULTIPLAYER) {
-      mallet1 = createMallet(world, 'player1', true)
-      mallet2 = createMallet(world, 'player2', false)
+      mallet1 = createMallet(world, 'player1', false)
+      mallet2 = createMallet(world, 'player2', true)
     } else if (gameMode === GAME_MODES.STAGE_MODE) {
-      mallet1 = createMallet(world, 'player1', true)
-      mallet2 = createMallet(world, 'ai', false)
+      mallet1 = createMallet(world, 'player1', false)
+      mallet2 = createMallet(world, 'ai', true)
       const stageConfig = STAGE_LEVELS.find((s) => s.id === currentStage) || STAGE_LEVELS[0]
       obstacles = createObstaclesForLevel(world, stageConfig)
       aiSystem = createAISystem(difficulty || 'MEDIUM')
@@ -306,32 +339,48 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
     }
 
     entitiesRef.current = entities
-    setEntities(entities)
   }, [gameMode, difficulty, currentStage])
 
   useEffect(() => {
+    // Start countdown before game begins
+    gameStateRef.current = 'countdown'
+    countdownRef.current = 3
+    forceUpdate((t) => t + 1)
+
+    const countdownInterval = setInterval(() => {
+      countdownRef.current -= 1
+
+      if (countdownRef.current <= 0) {
+        clearInterval(countdownInterval)
+        countdownIntervalRef.current = null
+        gameStateRef.current = 'playing'
+        forceUpdate((t) => t + 1)
+      } else {
+        forceUpdate((t) => t + 1)
+      }
+    }, 1000)
+
+    countdownIntervalRef.current = countdownInterval
+
     initializeGame()
 
-    gameLoopRef.current = requestAnimationFrame((timestamp) => {
-      lastFrameTimeRef.current = timestamp
-      gameLoop(timestamp)
-    })
-
     return () => {
-      if (gameLoopRef.current) {
-        cancelAnimationFrame(gameLoopRef.current)
+      if (countdownInterval) {
+        clearInterval(countdownInterval)
       }
       destroyEngine()
     }
-  }, [initializeGame, gameLoop])
+  }, [initializeGame, forceUpdate, gameStateRef])
 
   const handlePause = useCallback(() => {
-    setGameState('paused')
-  }, [])
+    gameStateRef.current = 'paused'
+    forceUpdate((t) => t + 1)
+  }, [gameStateRef])
 
   const handleResume = useCallback(() => {
-    setGameState('playing')
-  }, [])
+    gameStateRef.current = 'playing'
+    forceUpdate((t) => t + 1)
+  }, [gameStateRef])
 
   const handleMainMenu = useCallback(() => {
     if (onReset) onReset()
@@ -339,21 +388,24 @@ export const GameScreen = ({ gameMode, difficulty, currentStage, onReset, onScor
 
   return (
     <View style={styles.container}>
-      <View
-        style={styles.gameContainer}
-        onLayout={handleLayout}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-      >
-        <GameRenderer entities={entities} />
+      <View style={styles.gameContainer} onLayout={handleLayout}>
+        <GameRenderer
+          entitiesRef={entitiesRef}
+          scoreRef={scoreRef}
+          countdownRef={countdownRef}
+          gameStateRef={gameStateRef}
+          tickRef={tickRef}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        />
       </View>
 
       <GameUI
         gameMode={gameMode}
-        score={score}
-        gameState={gameState}
-        countdown={countdown}
+        score={scoreRef.current}
+        gameState={gameStateRef.current}
+        countdown={countdownRef.current}
         difficulty={difficulty}
         currentStage={currentStage}
         onModeSelect={() => {}}

@@ -37,7 +37,7 @@ export const createMallet = (world, playerId, isPlayer1 = true) => {
 
 export const constrainMallet = (malletEntity) => {
   const Matter = require('matter-js')
-  const { Body, Vector } = Matter
+  const { Body } = Matter
 
   let { x, y } = malletEntity.body.position
 
@@ -45,7 +45,10 @@ export const constrainMallet = (malletEntity) => {
   y = Math.max(malletEntity.minY, Math.min(malletEntity.maxY, y))
 
   Body.setPosition(malletEntity.body, { x, y })
-  Body.setVelocity(malletEntity.body, { x: 0, y: 0 })
+
+  // Sync entity position immediately
+  malletEntity.position.x = x
+  malletEntity.position.y = y
 }
 
 export const setMalletPosition = (malletEntity, x, y) => {
@@ -56,5 +59,8 @@ export const setMalletPosition = (malletEntity, x, y) => {
   const constrainedY = Math.max(malletEntity.minY, Math.min(malletEntity.maxY, y))
 
   Body.setPosition(malletEntity.body, { x: constrainedX, y: constrainedY })
-  Body.setVelocity(malletEntity.body, { x: 0, y: 0 })
+
+  // Sync entity position immediately for responsive rendering
+  malletEntity.position.x = constrainedX
+  malletEntity.position.y = constrainedY
 }

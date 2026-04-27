@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useRef, useCallback, useState } from 'react'
 import { StyleSheet, View, StatusBar } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { GameScreen } from './screens/GameScreen'
@@ -6,65 +6,95 @@ import { GameUI } from './components/GameUI'
 import { GAME_MODES } from './constants/GameConstants'
 
 const AirHockeyApp = () => {
-  const [gameMode, setGameMode] = useState(null)
-  const [difficulty, setDifficulty] = useState(null)
-  const [currentStage, setCurrentStage] = useState(null)
-  const [score, setScore] = useState({ player: 0, ai: 0 })
-  const [gameState, setGameState] = useState('menu')
-  const [countdown, setCountdown] = useState(3)
+  const [renderKey, setRenderKey] = useState(0)
 
-  const handleModeSelect = useCallback((mode) => {
-    if (mode === GAME_MODES.SINGLE_PLAYER) {
-      setGameMode(mode)
-      setGameState('difficulty')
-    } else if (mode === GAME_MODES.LOCAL_MULTIPLAYER) {
-      setGameMode(mode)
-      setGameState('playing')
-    } else if (mode === GAME_MODES.STAGE_MODE) {
-      setGameMode(mode)
-      setGameState('stage')
-    }
+  const gameConfigRef = useRef({
+    gameMode: null,
+    difficulty: null,
+    currentStage: null,
+    score: { player: 0, ai: 0 },
+    countdown: 3,
+  })
+
+  const menuStateRef = useRef('menu')
+
+  const forceRender = useCallback(() => {
+    setRenderKey((k) => k + 1)
   }, [])
 
-  const handleDifficultyChange = useCallback((diff) => {
-    setDifficulty(diff)
-    setGameState('playing')
-  }, [])
+  const setMenuState = useCallback(
+    (state) => {
+      menuStateRef.current = state
+      forceRender()
+    },
+    [forceRender],
+  )
 
-  const handleStageSelect = useCallback((stageId) => {
-    setCurrentStage(stageId)
-    setDifficulty('MEDIUM')
-    setGameState('playing')
-  }, [])
+  const handleModeSelect = useCallback(
+    (mode) => {
+      gameConfigRef.current.gameMode = mode
+      if (mode === GAME_MODES.SINGLE_PLAYER) {
+        setMenuState('difficulty')
+      } else if (mode === GAME_MODES.LOCAL_MULTIPLAYER) {
+        menuStateRef.current = 'playing'
+        setMenuState('playing')
+      } else if (mode === GAME_MODES.STAGE_MODE) {
+        setMenuState('stage')
+      }
+    },
+    [setMenuState],
+  )
+
+  const handleDifficultyChange = useCallback(
+    (diff) => {
+      gameConfigRef.current.difficulty = diff
+      setMenuState('playing')
+    },
+    [setMenuState],
+  )
+
+  const handleStageSelect = useCallback(
+    (stageId) => {
+      gameConfigRef.current.currentStage = stageId
+      gameConfigRef.current.difficulty = 'MEDIUM'
+      setMenuState('playing')
+    },
+    [setMenuState],
+  )
 
   const handleReset = useCallback(() => {
-    setGameMode(null)
-    setDifficulty(null)
-    setCurrentStage(null)
-    setScore({ player: 0, ai: 0 })
-    setGameState('menu')
-    setCountdown(3)
-  }, [])
+    gameConfigRef.current = {
+      gameMode: null,
+      difficulty: null,
+      currentStage: null,
+      score: { player: 0, ai: 0 },
+      countdown: 3,
+    }
+    setMenuState('menu')
+  }, [setMenuState])
 
   const handleScoreUpdate = useCallback((newScore) => {
-    setScore(newScore)
+    gameConfigRef.current.score = newScore
   }, [])
 
   const handlePause = useCallback(() => {
-    setGameState('paused')
-  }, [])
+    setMenuState('paused')
+  }, [setMenuState])
 
   const handleResume = useCallback(() => {
-    setGameState('playing')
-  }, [])
+    setMenuState('playing')
+  }, [setMenuState])
 
   const renderContent = () => {
-    if (gameState === 'menu' || gameState === 'difficulty' || gameState === 'stage') {
+    const menuState = menuStateRef.current
+    const { gameMode, score, countdown, difficulty, currentStage } = gameConfigRef.current
+
+    if (menuState === 'menu' || menuState === 'difficulty' || menuState === 'stage') {
       return (
         <GameUI
           gameMode={gameMode}
           score={score}
-          gameState={gameState}
+          gameState={menuState}
           countdown={countdown}
           difficulty={difficulty}
           currentStage={currentStage}
@@ -78,12 +108,14 @@ const AirHockeyApp = () => {
       )
     }
 
-    if (gameState === 'playing' || gameState === 'countdown' || gameState === 'paused') {
+    if (menuState === 'playing' || menuState === 'countdown' || menuState === 'paused') {
       return (
         <GameScreen
           gameMode={gameMode}
           difficulty={difficulty}
           currentStage={currentStage}
+          gameStateRef={menuStateRef}
+          gameConfigRef={gameConfigRef}
           onReset={handleReset}
           onScoreUpdate={handleScoreUpdate}
         />
@@ -94,7 +126,7 @@ const AirHockeyApp = () => {
       <GameUI
         gameMode={gameMode}
         score={score}
-        gameState={gameState}
+        gameState={menuState}
         countdown={countdown}
         difficulty={difficulty}
         currentStage={currentStage}
@@ -109,7 +141,7 @@ const AirHockeyApp = () => {
   }
 
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <GestureHandlerRootView style={styles.container} key={renderKey}>
       <StatusBar hidden />
       <View style={styles.container}>{renderContent()}</View>
     </GestureHandlerRootView>

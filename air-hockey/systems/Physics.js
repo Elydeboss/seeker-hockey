@@ -174,18 +174,17 @@ export const limitMalletSpeed = (malletBody) => {
 export const syncEntityPosition = (entity) => {
   if (!entity || !entity.body) return entity
 
-  return {
-    ...entity,
-    position: {
-      x: entity.body.position.x,
-      y: entity.body.position.y,
-    },
-    rotation: entity.body.angle,
-    velocity: {
-      x: entity.body.velocity.x,
-      y: entity.body.velocity.y,
-    },
+  // Mutate in place instead of creating new objects
+  entity.position.x = entity.body.position.x
+  entity.position.y = entity.body.position.y
+  entity.rotation = entity.body.angle
+
+  if (entity.velocity) {
+    entity.velocity.x = entity.body.velocity.x
+    entity.velocity.y = entity.body.velocity.y
   }
+
+  return entity
 }
 
 export const clearWorld = () => {

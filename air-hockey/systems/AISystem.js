@@ -7,6 +7,7 @@ import {
   WALL_THICKNESS,
   GOAL_WIDTH,
 } from '../constants/GameConstants'
+import { setMalletPosition } from '../entities/Mallet'
 
 const predictPuckPosition = (puck, framesAhead) => {
   const steps = framesAhead
@@ -110,6 +111,15 @@ export const createAISystem = (difficulty = 'MEDIUM') => {
       lastPuckVelX = puckVelX
       lastPuckVelY = puckVelY
 
+      // Optimization: When puck is far away in top 30%, use simple defensive positioning
+      const isPuckFarAway = puckY < GAME_HEIGHT * 0.3
+      if (isPuckFarAway && puckVelY < 1) {
+        const defaultX = GAME_WIDTH / 2 + puckVelX * 2
+        const defaultY = aiMallet.minY + 30
+        setMalletPosition(aiMallet, defaultX, defaultY)
+        return entities
+      }
+
       const puckSpeed = Math.sqrt(puckVelX * puckVelX + puckVelY * puckVelY)
       const isPuckMovingTowardAI = puckVelY > 0
       const isPuckMovingAway = puckVelY < 0
@@ -172,7 +182,6 @@ export const createAISystem = (difficulty = 'MEDIUM') => {
       const newX = currentX + (targetX - currentX) * positionLerp
       const newY = currentY + (targetY - currentY) * positionLerp
 
-      const { setMalletPosition } = require('../entities/Mallet')
       setMalletPosition(aiMallet, newX, newY)
 
       return entities
